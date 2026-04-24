@@ -10,14 +10,10 @@ import { Paperclip, ArrowUp, Loader2 } from 'lucide-react';
 import { ExamplePrompts } from '@/components/example-prompts';
 import { ChatMessage } from '@/components/chat-message';
 import { FilePreview } from '@/components/file-preview';
-import { client } from '@/lib/langgraph-client';
 import {
-  AgentState,
-  documentType,
   PDFDocument,
   RetrieveDocumentsNodeUpdates,
 } from '@/types/graphTypes';
-import { Card, CardContent } from '@/components/ui/card';
 export default function Home() {
   const { toast } = useToast(); // Add this hook
   const [messages, setMessages] = useState<
@@ -44,7 +40,13 @@ export default function Home() {
       if (threadId) return;
 
       try {
-        const thread = await client.createThread();
+        const response = await fetch('/api/thread', {
+          method: 'POST',
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const thread = await response.json();
 
         setThreadId(thread.thread_id);
       } catch (error) {
@@ -52,7 +54,7 @@ export default function Home() {
         toast({
           title: 'Error',
           description:
-            'Error creating thread. Please make sure you have set the LANGGRAPH_API_URL environment variable correctly. ' +
+            'Error creating thread. Please make sure you have set the backend API URL correctly. ' +
             error,
           variant: 'destructive',
         });
@@ -234,6 +236,10 @@ export default function Home() {
         throw new Error(data.error || 'Failed to upload files');
       }
 
+      const data = await response.json();
+      if (data.threadId) {
+        setThreadId(data.threadId);
+      }
       setFiles((prev) => [...prev, ...selectedFiles]);
       toast({
         title: 'Success',

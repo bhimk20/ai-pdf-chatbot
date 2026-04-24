@@ -16,8 +16,8 @@ global.Request = Request;
 global.Response = Response;
 
 // Mock environment variables
-process.env.NEXT_PUBLIC_LANGGRAPH_API_URL = 'http://localhost:2024';
-process.env.LANGCHAIN_API_KEY = 'test-key';
+process.env.BACKEND_API_URL = 'http://localhost:8000';
+process.env.NEXT_PUBLIC_BACKEND_API_URL = 'http://localhost:8000';
 
 // Mock the performance API
 global.performance = {

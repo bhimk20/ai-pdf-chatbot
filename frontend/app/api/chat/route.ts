@@ -1,8 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createServerClient } from '@/lib/langgraph-server';
-import { retrievalAssistantStreamConfig } from '@/constants/graphConfigs';
-
-export const runtime = 'edge';
+import { getBackendApiUrl } from '@/lib/backend-api';
 
 export async function POST(req: Request) {
   try {
@@ -28,60 +25,26 @@ export async function POST(req: Request) {
       );
     }
 
-    if (!process.env.LANGGRAPH_RETRIEVAL_ASSISTANT_ID) {
-      return new NextResponse(
-        JSON.stringify({
-          error: 'LANGGRAPH_RETRIEVAL_ASSISTANT_ID is not set',
-        }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } },
-      );
-    }
-
     try {
-      const assistantId = process.env.LANGGRAPH_RETRIEVAL_ASSISTANT_ID;
-      const serverClient = createServerClient();
-
-      const stream = await serverClient.client.runs.stream(
-        threadId,
-        assistantId,
-        {
-          input: { query: message },
-          streamMode: ['messages', 'updates'],
-          config: {
-            configurable: {
-              ...retrievalAssistantStreamConfig,
-            },
-          },
+      const response = await fetch(`${getBackendApiUrl()}/chat/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
         },
-      );
-
-      // Set up response as a stream
-      const encoder = new TextEncoder();
-      const customReadable = new ReadableStream({
-        async start(controller) {
-          try {
-            // Forward each chunk from the graph to the client
-            for await (const chunk of stream) {
-              // Only send relevant chunks
-              controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`),
-              );
-            }
-          } catch (error) {
-            console.error('Streaming error:', error);
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ error: 'Streaming error occurred' })}\n\n`,
-              ),
-            );
-          } finally {
-            controller.close();
-          }
-        },
+        body: JSON.stringify({ message, threadId }),
+        cache: 'no-store',
       });
 
-      // Return the stream with appropriate headers
-      return new Response(customReadable, {
+      if (!response.ok || !response.body) {
+        const contentType = response.headers.get('content-type') || '';
+        const data = contentType.includes('application/json')
+          ? await response.json().catch(() => ({ error: 'Internal server error' }))
+          : { error: (await response.text()) || 'Internal server error' };
+        return NextResponse.json(data, { status: response.status || 500 });
+      }
+
+      return new Response(response.body, {
         headers: {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',

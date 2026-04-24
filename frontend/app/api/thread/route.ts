@@ -1,12 +1,13 @@
+import { NextResponse } from 'next/server';
 import { getBackendApiUrl } from '@/lib/backend-api';
-import { NextRequest, NextResponse } from 'next/server';
 
-export async function POST(request: NextRequest) {
+export async function POST() {
   try {
-    const formData = await request.formData();
-    const response = await fetch(`${getBackendApiUrl()}/ingest`, {
+    const response = await fetch(`${getBackendApiUrl()}/threads`, {
       method: 'POST',
-      body: formData,
+      headers: {
+        Accept: 'application/json',
+      },
       cache: 'no-store',
     });
 
@@ -15,10 +16,10 @@ export async function POST(request: NextRequest) {
       ? await response.json()
       : { error: await response.text() };
     return NextResponse.json(data, { status: response.status });
-  } catch (error: any) {
-    console.error('Error processing files:', error);
+  } catch (error) {
+    console.error('Thread route error:', error);
     return NextResponse.json(
-      { error: 'Failed to process files', details: error.message },
+      { error: 'Failed to create thread' },
       { status: 500 },
     );
   }

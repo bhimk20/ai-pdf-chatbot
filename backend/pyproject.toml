@@ -1,0 +1,41 @@
+[project]
+name = "ai-pdf-chatbot-backend"
+version = "0.1.0"
+description = "FastAPI backend for the AI PDF chatbot"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0,<1.0.0",
+  "langchain>=0.3.0,<0.4.0",
+  "langchain-community>=0.3.0,<0.4.0",
+  "langchain-google-genai>=2.0.0,<3.0.0",
+  "langchain-text-splitters>=0.3.0,<0.4.0",
+  "pydantic-settings>=2.6.0,<3.0.0",
+  "pypdf>=5.0.0,<6.0.0",
+  "python-multipart>=0.0.12,<0.1.0",
+  "supabase>=2.10.0,<3.0.0",
+  "uvicorn[standard]>=0.32.0,<1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28.0,<0.29.0",
+  "pytest>=8.3.0,<9.0.0",
+  "ruff>=0.8.0,<0.9.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app", "app.*"]

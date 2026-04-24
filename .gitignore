@@ -40,6 +40,7 @@ apps/docs/public/registry/
 
 # env
 .env
+.venv/
 
 # cursor
 .cursor
@@ -51,3 +52,13 @@ llm_context/
 test_docs
 
 .swc
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# keep yarn as the single lockfile for frontend
+package-lock.json

@@ -6,7 +6,6 @@
     "author": "Mayo Oshin",
     "license": "MIT",
     "workspaces": [
-      "backend",
       "frontend"
     ],
     "scripts": {

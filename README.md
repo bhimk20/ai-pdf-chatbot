@@ -87,11 +87,39 @@ The frontend runs on `http://localhost:3000` and the backend runs on `http://loc
 
 ## API Overview
 
+- `GET /metrics`: Prometheus metrics endpoint
+- `GET /debug/status`: safe backend readiness/debug checks
 - `POST /threads`: create a chat thread
+- `GET /threads`: list persisted threads
 - `GET /threads/{thread_id}`: load persisted thread messages
+- `DELETE /threads/{thread_id}`: delete a persisted thread
 - `POST /ingest`: upload up to 5 PDFs and index them in Supabase
 - `POST /chat/stream`: stream chat responses as SSE
 - `GET /health`: health check
+
+## Monitoring
+
+Phase 1 monitoring is built into the FastAPI backend:
+
+- JSON request logs with request id, path, status, and latency
+- Prometheus metrics at `http://localhost:8000/metrics`
+- Safe readiness/debug checks at `http://localhost:8000/debug/status`
+
+Useful quick checks:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/debug/status
+curl http://localhost:8000/metrics
+```
+
+`/debug/status` verifies:
+
+- required env vars are present
+- Supabase `documents` table is reachable
+- Supabase `match_documents` RPC is callable
+
+It does not return secrets.
 
 ## Supabase Vector Size
 

@@ -35,6 +35,18 @@ class ThreadStateResponse(BaseModel):
     messages: list[ThreadMessageResponse]
 
 
+class ThreadListItemResponse(BaseModel):
+    thread_id: str
+    title: str
+    preview: str
+    updated_at: str
+    message_count: int
+
+
+class ThreadListResponse(BaseModel):
+    threads: list[ThreadListItemResponse]
+
+
 class IngestResponse(BaseModel):
     message: str
     threadId: str

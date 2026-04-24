@@ -2,92 +2,175 @@
 
 import type React from 'react';
 
-import { useToast } from '@/hooks/use-toast';
-import { useRef, useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  ArrowUp,
+  Loader2,
+  MessageSquare,
+  Paperclip,
+  Plus,
+  Trash2,
+} from 'lucide-react';
+
+import { ChatMessage } from '@/components/chat-message';
+import { ExamplePrompts } from '@/components/example-prompts';
+import { FilePreview } from '@/components/file-preview';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Paperclip, ArrowUp, Loader2 } from 'lucide-react';
-import { ExamplePrompts } from '@/components/example-prompts';
-import { ChatMessage } from '@/components/chat-message';
-import { FilePreview } from '@/components/file-preview';
+import { useToast } from '@/hooks/use-toast';
 import {
   PDFDocument,
   RetrieveDocumentsNodeUpdates,
 } from '@/types/graphTypes';
 
 const THREAD_STORAGE_KEY = 'pdf-chat-thread-id';
+
+type Message = {
+  role: 'user' | 'assistant';
+  content: string;
+  sources?: PDFDocument[];
+};
+
+type ThreadSummary = {
+  thread_id: string;
+  title: string;
+  preview: string;
+  updated_at: string;
+  message_count: number;
+};
+
+const formatThreadTime = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  });
+};
+
 export default function Home() {
-  const { toast } = useToast(); // Add this hook
-  const [messages, setMessages] = useState<
-    Array<{
-      role: 'user' | 'assistant';
-      content: string;
-      sources?: PDFDocument[];
-    }>
-  >([]);
+  const { toast } = useToast();
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isResettingChat, setIsResettingChat] = useState(false);
+  const [isThreadListLoading, setIsThreadListLoading] = useState(true);
   const [threadId, setThreadId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null); // Track the AbortController
-  const messagesEndRef = useRef<HTMLDivElement>(null); // Add this ref
-  const lastRetrievedDocsRef = useRef<PDFDocument[]>([]); // useRef to store the last retrieved documents
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const lastRetrievedDocsRef = useRef<PDFDocument[]>([]);
+
+  const clearComposerState = () => {
+    setInput('');
+    setFiles([]);
+    lastRetrievedDocsRef.current = [];
+  };
+
+  const clearChatState = () => {
+    setMessages([]);
+    clearComposerState();
+  };
+
+  const abortInFlightChat = () => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setIsLoading(false);
+  };
+
+  const refreshThreadList = async (preferredThreadId?: string) => {
+    setIsThreadListLoading(true);
+    try {
+      const response = await fetch('/api/thread', {
+        method: 'GET',
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const nextThreads = (data.threads || []) as ThreadSummary[];
+      setThreads(nextThreads);
+
+      if (
+        preferredThreadId &&
+        nextThreads.some((thread) => thread.thread_id === preferredThreadId)
+      ) {
+        setThreadId(preferredThreadId);
+      }
+    } finally {
+      setIsThreadListLoading(false);
+    }
+  };
+
+  const loadThread = async (nextThreadId: string) => {
+    const response = await fetch(`/api/thread/${nextThreadId}`, {
+      method: 'GET',
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    setThreadId(data.thread_id);
+    window.localStorage.setItem(THREAD_STORAGE_KEY, data.thread_id);
+    setMessages(
+      (data.messages || []).map(
+        (message: { role: 'user' | 'assistant'; content: string }) => ({
+          role: message.role,
+          content: message.content,
+          sources: undefined,
+        }),
+      ),
+    );
+    clearComposerState();
+  };
+
+  const createFreshThread = async () => {
+    const response = await fetch('/api/thread', {
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    setThreadId(data.thread_id);
+    window.localStorage.setItem(THREAD_STORAGE_KEY, data.thread_id);
+    clearChatState();
+    await refreshThreadList(data.thread_id);
+    return data.thread_id as string;
+  };
 
   useEffect(() => {
-    const initThread = async () => {
-      if (threadId) return;
+    let active = true;
 
+    const init = async () => {
       try {
         const savedThreadId = window.localStorage.getItem(THREAD_STORAGE_KEY);
-        const response = savedThreadId
-          ? await fetch(`/api/thread/${savedThreadId}`, {
-              method: 'GET',
-            })
-          : await fetch('/api/thread', {
-              method: 'POST',
-            });
+        await refreshThreadList(savedThreadId || undefined);
 
-        if (!response.ok) {
-          if (savedThreadId) {
-            window.localStorage.removeItem(THREAD_STORAGE_KEY);
-            const freshResponse = await fetch('/api/thread', {
-              method: 'POST',
-            });
-            if (!freshResponse.ok) {
-              throw new Error(`HTTP error! status: ${freshResponse.status}`);
-            }
-            const freshThread = await freshResponse.json();
-            setThreadId(freshThread.thread_id);
-            window.localStorage.setItem(
-              THREAD_STORAGE_KEY,
-              freshThread.thread_id,
-            );
-            setMessages([]);
-            return;
-          }
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data = await response.json();
+        if (!active) return;
 
         if (savedThreadId) {
-          setThreadId(data.thread_id);
-          setMessages(
-            (data.messages || []).map(
-              (message: { role: 'user' | 'assistant'; content: string }) => ({
-                role: message.role,
-                content: message.content,
-                sources: undefined,
-              }),
-            ),
-          );
-        } else {
-          setThreadId(data.thread_id);
-          window.localStorage.setItem(THREAD_STORAGE_KEY, data.thread_id);
+          try {
+            await loadThread(savedThreadId);
+            return;
+          } catch {
+            window.localStorage.removeItem(THREAD_STORAGE_KEY);
+          }
         }
+
+        await createFreshThread();
       } catch (error) {
-        console.error('Error creating thread:', error);
+        console.error('Error initializing thread:', error);
         toast({
           title: 'Error',
           description:
@@ -97,34 +180,63 @@ export default function Home() {
         });
       }
     };
-    initThread();
+
+    void init();
+
+    return () => {
+      active = false;
+      abortInFlightChat();
+    };
   }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const handleSelectThread = async (nextThreadId: string) => {
+    if (
+      nextThreadId === threadId ||
+      isUploading ||
+      isResettingChat ||
+      isThreadListLoading
+    ) {
+      return;
+    }
+
+    abortInFlightChat();
+    try {
+      await loadThread(nextThreadId);
+    } catch (error) {
+      console.error('Error loading thread:', error);
+      toast({
+        title: 'Thread load failed',
+        description:
+          'Could not load the selected chat.\n' +
+          (error instanceof Error ? error.message : 'Unknown error'),
+        variant: 'destructive',
+      });
+      await refreshThreadList();
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || !threadId || isLoading) return;
+    if (!input.trim() || !threadId || isLoading || isResettingChat) return;
 
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
+    abortInFlightChat();
 
     const userMessage = input.trim();
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: userMessage, sources: undefined }, // Clear sources for new user message
-      { role: 'assistant', content: '', sources: undefined }, // Clear sources for new assistant message
+      { role: 'user', content: userMessage, sources: undefined },
+      { role: 'assistant', content: '', sources: undefined },
     ]);
     setInput('');
     setIsLoading(true);
 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
-
-    lastRetrievedDocsRef.current = []; // Clear the last retrieved documents
+    lastRetrievedDocsRef.current = [];
 
     try {
       const response = await fetch('/api/chat', {
@@ -169,57 +281,51 @@ export default function Home() {
 
           const { event, data } = sseEvent;
 
-          if (event === 'messages/partial') {
-            if (Array.isArray(data)) {
-              const lastObj = data[data.length - 1];
-              if (lastObj?.type === 'ai') {
-                const partialContent = lastObj.content ?? '';
+          if (event === 'messages/partial' && Array.isArray(data)) {
+            const lastObj = data[data.length - 1];
+            if (lastObj?.type === 'ai') {
+              const partialContent = lastObj.content ?? '';
 
-                // Only display if content is a string message
-                if (
-                  typeof partialContent === 'string' &&
-                  !partialContent.startsWith('{')
-                ) {
-                  setMessages((prev) => {
-                    const newArr = [...prev];
-                    if (
-                      newArr.length > 0 &&
-                      newArr[newArr.length - 1].role === 'assistant'
-                    ) {
-                      newArr[newArr.length - 1].content = partialContent;
-                      newArr[newArr.length - 1].sources =
-                        lastRetrievedDocsRef.current;
-                    }
-
-                    return newArr;
-                  });
-                }
+              if (
+                typeof partialContent === 'string' &&
+                !partialContent.startsWith('{')
+              ) {
+                setMessages((prev) => {
+                  const next = [...prev];
+                  if (
+                    next.length > 0 &&
+                    next[next.length - 1].role === 'assistant'
+                  ) {
+                    next[next.length - 1].content = partialContent;
+                    next[next.length - 1].sources =
+                      lastRetrievedDocsRef.current;
+                  }
+                  return next;
+                });
               }
             }
           } else if (event === 'updates' && data) {
             if (
-              data &&
               typeof data === 'object' &&
               'retrieveDocuments' in data &&
               data.retrieveDocuments &&
               Array.isArray(data.retrieveDocuments.documents)
             ) {
-              const retrievedDocs = (data as RetrieveDocumentsNodeUpdates)
+              lastRetrievedDocsRef.current = (data as RetrieveDocumentsNodeUpdates)
                 .retrieveDocuments.documents as PDFDocument[];
-
-              // // Handle documents here
-              lastRetrievedDocsRef.current = retrievedDocs;
-              console.log('Retrieved documents:', retrievedDocs);
             } else {
-              // Clear the last retrieved documents if it's a direct answer
               lastRetrievedDocsRef.current = [];
             }
-          } else {
-            console.log('Unknown SSE event:', event, data);
           }
         }
       }
+
+      await refreshThreadList(threadId);
     } catch (error) {
+      if (abortController.signal.aborted) {
+        return;
+      }
+
       console.error('Error sending message:', error);
       toast({
         title: 'Error',
@@ -229,10 +335,12 @@ export default function Home() {
         variant: 'destructive',
       });
       setMessages((prev) => {
-        const newArr = [...prev];
-        newArr[newArr.length - 1].content =
-          'Sorry, there was an error processing your message.';
-        return newArr;
+        const next = [...prev];
+        if (next.length > 0 && next[next.length - 1].role === 'assistant') {
+          next[next.length - 1].content =
+            'Sorry, there was an error processing your message.';
+        }
+        return next;
       });
     } finally {
       setIsLoading(false);
@@ -278,6 +386,7 @@ export default function Home() {
         setThreadId(data.threadId);
         window.localStorage.setItem(THREAD_STORAGE_KEY, data.threadId);
         setMessages([]);
+        await refreshThreadList(data.threadId);
       }
       setFiles((prev) => [...prev, ...selectedFiles]);
       toast({
@@ -303,7 +412,7 @@ export default function Home() {
   };
 
   const handleRemoveFile = (fileToRemove: File) => {
-    setFiles(files.filter((file) => file !== fileToRemove));
+    setFiles((prev) => prev.filter((file) => file !== fileToRemove));
     toast({
       title: 'File removed',
       description: `${fileToRemove.name} has been removed`,
@@ -311,102 +420,283 @@ export default function Home() {
     });
   };
 
-  return (
-    <main className="flex min-h-screen flex-col items-center p-4 md:p-24 max-w-5xl mx-auto w-full">
-      {messages.length === 0 ? (
-        <>
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center">
-              <p className="font-medium text-muted-foreground max-w-md mx-auto">
-                This ai chatbot is an example template to accompany the book:{' '}
-                <a
-                  href="https://www.oreilly.com/library/view/learning-langchain/9781098167271/"
-                  className="underline hover:text-foreground"
-                >
-                  Learning LangChain (O'Reilly): Building AI and LLM
-                  applications with LangChain and LangGraph
-                </a>
-              </p>
-            </div>
-          </div>
-          <ExamplePrompts onPromptSelect={setInput} />
-        </>
-      ) : (
-        <div className="w-full space-y-4 mb-20">
-          {messages.map((message, i) => (
-            <ChatMessage key={i} message={message} />
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
-      )}
+  const handleNewChat = async () => {
+    if (isUploading || isResettingChat) return;
 
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-background">
-        <div className="max-w-5xl mx-auto space-y-4">
-          {files.length > 0 && (
-            <div className="grid grid-cols-3 gap-2">
-              {files.map((file, index) => (
-                <FilePreview
-                  key={`${file.name}-${index}`}
-                  file={file}
-                  onRemove={() => handleRemoveFile(file)}
-                />
+    setIsResettingChat(true);
+    abortInFlightChat();
+
+    try {
+      await createFreshThread();
+    } catch (error) {
+      console.error('Error creating fresh chat:', error);
+      toast({
+        title: 'New chat failed',
+        description:
+          'Could not start a new chat.\n' +
+          (error instanceof Error ? error.message : 'Unknown error'),
+        variant: 'destructive',
+      });
+    } finally {
+      setIsResettingChat(false);
+    }
+  };
+
+  const handleDeleteThread = async (targetThreadId: string) => {
+    if (isUploading || isResettingChat) return;
+
+    setIsResettingChat(true);
+    const deletingActiveThread = targetThreadId === threadId;
+
+    if (deletingActiveThread) {
+      abortInFlightChat();
+    }
+
+    try {
+      const response = await fetch(`/api/thread/${targetThreadId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok && response.status !== 404) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      if (deletingActiveThread) {
+        window.localStorage.removeItem(THREAD_STORAGE_KEY);
+        await createFreshThread();
+      } else {
+        await refreshThreadList(threadId || undefined);
+      }
+    } catch (error) {
+      console.error('Error deleting thread:', error);
+      toast({
+        title: 'Delete chat failed',
+        description:
+          'Could not delete the chat.\n' +
+          (error instanceof Error ? error.message : 'Unknown error'),
+        variant: 'destructive',
+      });
+    } finally {
+      setIsResettingChat(false);
+    }
+  };
+
+  return (
+    <main className="flex min-h-screen bg-background">
+      <aside className="hidden md:flex md:w-80 md:flex-col md:border-r md:bg-muted/30">
+        <div className="border-b p-4">
+          <Button
+            type="button"
+            className="w-full justify-start"
+            onClick={handleNewChat}
+            disabled={isUploading || isResettingChat}
+          >
+            {isResettingChat ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4" />
+            )}
+            New chat
+          </Button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-3">
+          <div className="mb-3 px-2 text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+            Threads
+          </div>
+
+          <div className="space-y-2">
+            {isThreadListLoading ? (
+              <div className="flex items-center gap-2 px-2 py-3 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading chats...
+              </div>
+            ) : threads.length === 0 ? (
+              <div className="rounded-xl border border-dashed bg-background/80 p-4 text-sm text-muted-foreground">
+                No chats yet.
+              </div>
+            ) : (
+              threads.map((thread) => {
+                const isActive = thread.thread_id === threadId;
+
+                return (
+                  <div
+                    key={thread.thread_id}
+                    className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
+                      isActive
+                        ? 'border-foreground bg-background shadow-sm'
+                        : 'border-transparent bg-background/70 hover:border-border hover:bg-background'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 rounded-lg bg-muted p-2">
+                        <MessageSquare className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleSelectThread(thread.thread_id)}
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="truncate text-sm font-medium">
+                                {thread.title}
+                              </p>
+                              <span className="shrink-0 text-[11px] text-muted-foreground">
+                                {formatThreadTime(thread.updated_at)}
+                              </span>
+                            </div>
+                            <p className="mt-1 max-h-10 overflow-hidden text-xs text-muted-foreground">
+                              {thread.preview}
+                            </p>
+                          </button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                            disabled={isResettingChat || isUploading}
+                            onClick={() => void handleDeleteThread(thread.thread_id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <div className="mt-3 flex items-center justify-between">
+                          <span className="text-[11px] text-muted-foreground">
+                            {thread.message_count} msg
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </aside>
+
+      <section className="flex min-h-screen flex-1 flex-col">
+        <div className="border-b px-4 py-3 md:hidden">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleNewChat}
+            disabled={isUploading || isResettingChat}
+          >
+            {isResettingChat ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4" />
+            )}
+            New chat
+          </Button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 md:p-8">
+          {messages.length === 0 ? (
+            <div className="mx-auto flex max-w-4xl flex-col">
+              <div className="flex min-h-[50vh] items-center justify-center">
+                <div className="text-center">
+                  <p className="mx-auto max-w-md font-medium text-muted-foreground">
+                    This ai chatbot is an example template to accompany the
+                    book:{' '}
+                    <a
+                      href="https://www.oreilly.com/library/view/learning-langchain/9781098167271/"
+                      className="underline hover:text-foreground"
+                    >
+                      Learning LangChain (O&apos;Reilly): Building AI and LLM
+                      applications with LangChain and LangGraph
+                    </a>
+                  </p>
+                </div>
+              </div>
+              <ExamplePrompts onPromptSelect={setInput} />
+            </div>
+          ) : (
+            <div className="mx-auto mb-28 w-full max-w-4xl space-y-4">
+              {messages.map((message, index) => (
+                <ChatMessage key={index} message={message} />
               ))}
+              <div ref={messagesEndRef} />
             </div>
           )}
-
-          <form onSubmit={handleSubmit} className="relative">
-            <div className="flex gap-2 border rounded-md overflow-hidden bg-gray-50">
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileUpload}
-                accept=".pdf"
-                multiple
-                className="hidden"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="rounded-none h-12"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isUploading}
-              >
-                {isUploading ? (
-                  <div className="flex items-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  </div>
-                ) : (
-                  <Paperclip className="h-4 w-4" />
-                )}
-              </Button>
-              <Input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder={
-                  isUploading ? 'Uploading PDF...' : 'Send a message...'
-                }
-                className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-12 bg-transparent"
-                disabled={isUploading || isLoading || !threadId}
-              />
-              <Button
-                type="submit"
-                size="icon"
-                className="rounded-none h-12"
-                disabled={
-                  !input.trim() || isUploading || isLoading || !threadId
-                }
-              >
-                {isLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <ArrowUp className="h-4 w-4" />
-                )}
-              </Button>
-            </div>
-          </form>
         </div>
-      </div>
+
+        <div className="sticky bottom-0 border-t bg-background/95 p-4 backdrop-blur">
+          <div className="mx-auto max-w-4xl space-y-4">
+            {files.length > 0 && (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {files.map((file, index) => (
+                  <FilePreview
+                    key={`${file.name}-${index}`}
+                    file={file}
+                    onRemove={() => handleRemoveFile(file)}
+                  />
+                ))}
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit}>
+              <div className="flex gap-2 rounded-2xl border bg-gray-50">
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileUpload}
+                  accept=".pdf"
+                  multiple
+                  className="hidden"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-12 rounded-none rounded-l-2xl"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading || isLoading || isResettingChat}
+                >
+                  {isUploading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Paperclip className="h-4 w-4" />
+                  )}
+                </Button>
+                <Input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder={
+                    isUploading ? 'Uploading PDF...' : 'Send a message...'
+                  }
+                  className="h-12 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0"
+                  disabled={
+                    isUploading || isLoading || isResettingChat || !threadId
+                  }
+                />
+                <Button
+                  type="submit"
+                  size="icon"
+                  className="h-12 rounded-none rounded-r-2xl"
+                  disabled={
+                    !input.trim() ||
+                    isUploading ||
+                    isLoading ||
+                    isResettingChat ||
+                    !threadId
+                  }
+                >
+                  {isLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <ArrowUp className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
     </main>
   );
 }

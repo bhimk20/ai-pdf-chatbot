@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import time
+from typing import Any
 
 import langchain_google_genai.chat_models as google_chat_models
 from langchain_community.vectorstores import SupabaseVectorStore
@@ -11,6 +13,7 @@ from pydantic import BaseModel
 from supabase import Client, create_client
 
 from app.config import Settings
+from app.monitoring import log_event, observe_external_call
 
 
 ROUTER_PROMPT = """You are a routing assistant.
@@ -127,8 +130,17 @@ class RetrievalService:
         )
 
     async def add_documents(self, docs: list[Document]) -> None:
-        if docs:
+        if not docs:
+            return
+
+        started_at = time.perf_counter()
+        try:
             await self.vector_store.aadd_documents(docs)
+        except Exception:
+            observe_external_call("supabase", "add_documents", started_at, success=False)
+            log_event("external_call_failed", service="supabase", operation="add_documents")
+            raise
+        observe_external_call("supabase", "add_documents", started_at, success=True)
 
     async def route_query(self, query: str) -> str:
         messages = [
@@ -136,42 +148,67 @@ class RetrievalService:
             HumanMessage(content=query),
         ]
 
+        started_at = time.perf_counter()
         try:
             structured_model = self.chat_model.with_structured_output(RouteDecision)
             response = await structured_model.ainvoke(messages)
+            observe_external_call("gemini", "route_query_structured", started_at, success=True)
             if response is not None and getattr(response, "route", None):
                 return _normalize_route(response.route)
         except Exception:
-            pass
+            observe_external_call("gemini", "route_query_structured", started_at, success=False)
+            log_event("external_call_failed", service="gemini", operation="route_query_structured")
 
-        fallback_response = await self.chat_model.ainvoke(
-            [
-                SystemMessage(
-                    content=(
-                        "You are a routing assistant. "
-                        "Reply with exactly one word: retrieve or direct."
-                    )
-                ),
-                HumanMessage(content=query),
-            ]
-        )
+        fallback_started_at = time.perf_counter()
+        try:
+            fallback_response = await self.chat_model.ainvoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "You are a routing assistant. "
+                            "Reply with exactly one word: retrieve or direct."
+                        )
+                    ),
+                    HumanMessage(content=query),
+                ]
+            )
+        except Exception:
+            observe_external_call("gemini", "route_query_fallback", fallback_started_at, success=False)
+            log_event("external_call_failed", service="gemini", operation="route_query_fallback")
+            raise
+        observe_external_call("gemini", "route_query_fallback", fallback_started_at, success=True)
         fallback_text = (
             _extract_text_content(fallback_response.content)
         )
         return _normalize_route(fallback_text)
 
     async def retrieve_documents(self, query: str) -> list[Document]:
-        query_embedding = await self.embeddings.aembed_query(query)
-        response = (
-            self.supabase.rpc(
-                "match_documents",
-                {
-                    "query_embedding": query_embedding,
-                    "match_count": self.settings.retrieval_k,
-                    "filter": {},
-                },
-            ).execute()
-        )
+        embedding_started_at = time.perf_counter()
+        try:
+            query_embedding = await self.embeddings.aembed_query(query)
+        except Exception:
+            observe_external_call("gemini", "embed_query", embedding_started_at, success=False)
+            log_event("external_call_failed", service="gemini", operation="embed_query")
+            raise
+        observe_external_call("gemini", "embed_query", embedding_started_at, success=True)
+
+        rpc_started_at = time.perf_counter()
+        try:
+            response = (
+                self.supabase.rpc(
+                    "match_documents",
+                    {
+                        "query_embedding": query_embedding,
+                        "match_count": self.settings.retrieval_k,
+                        "filter": {},
+                    },
+                ).execute()
+            )
+        except Exception:
+            observe_external_call("supabase", "match_documents", rpc_started_at, success=False)
+            log_event("external_call_failed", service="supabase", operation="match_documents")
+            raise
+        observe_external_call("supabase", "match_documents", rpc_started_at, success=True)
 
         rows = response.data or []
         documents: list[Document] = []
@@ -185,20 +222,34 @@ class RetrievalService:
         return documents
 
     async def answer_direct(self, history: list, query: str) -> str:
-        response = await self.chat_model.ainvoke([*history, HumanMessage(content=query)])
+        started_at = time.perf_counter()
+        try:
+            response = await self.chat_model.ainvoke([*history, HumanMessage(content=query)])
+        except Exception:
+            observe_external_call("gemini", "answer_direct", started_at, success=False)
+            log_event("external_call_failed", service="gemini", operation="answer_direct")
+            raise
+        observe_external_call("gemini", "answer_direct", started_at, success=True)
         return _extract_text_content(response.content)
 
     async def stream_answer_with_context(self, history: list, query: str, docs: list[Document]):
         prompt = ANSWER_PROMPT.format(question=query, context=format_docs(docs))
         accumulated = ""
-        async for chunk in self.chat_model.astream(
-            [*history, HumanMessage(content=prompt)]
-        ):
-            text = _extract_text_content(chunk.content)
-            if not text:
-                continue
-            accumulated += text
-            yield accumulated
+        started_at = time.perf_counter()
+        try:
+            async for chunk in self.chat_model.astream(
+                [*history, HumanMessage(content=prompt)]
+            ):
+                text = _extract_text_content(chunk.content)
+                if not text:
+                    continue
+                accumulated += text
+                yield accumulated
+        except Exception:
+            observe_external_call("gemini", "stream_answer_with_context", started_at, success=False)
+            log_event("external_call_failed", service="gemini", operation="stream_answer_with_context")
+            raise
+        observe_external_call("gemini", "stream_answer_with_context", started_at, success=True)
 
     @staticmethod
     def serialize_documents(docs: list[Document]) -> list[dict]:
@@ -211,3 +262,41 @@ class RetrievalService:
                 }
             )
         return serialized
+
+    def debug_checks(self) -> dict[str, Any]:
+        checks: dict[str, Any] = {
+            "gemini_api_key_present": bool(self.settings.google_api_key),
+            "supabase_url_present": bool(self.settings.supabase_url),
+            "supabase_service_role_key_present": bool(self.settings.supabase_service_role_key),
+        }
+
+        table_started_at = time.perf_counter()
+        try:
+            response = self.supabase.table("documents").select("id", count="exact").limit(1).execute()
+            observe_external_call("supabase", "documents_table_probe", table_started_at, success=True)
+            checks["documents_table_accessible"] = True
+            checks["documents_count"] = response.count if response.count is not None else 0
+        except Exception as exc:
+            observe_external_call("supabase", "documents_table_probe", table_started_at, success=False)
+            checks["documents_table_accessible"] = False
+            checks["documents_table_error"] = str(exc)
+
+        rpc_started_at = time.perf_counter()
+        try:
+            zero_vector = [0.0] * self.settings.gemini_embedding_dimensions
+            self.supabase.rpc(
+                "match_documents",
+                {
+                    "query_embedding": zero_vector,
+                    "match_count": 1,
+                    "filter": {},
+                },
+            ).execute()
+            observe_external_call("supabase", "match_documents_probe", rpc_started_at, success=True)
+            checks["match_documents_rpc_accessible"] = True
+        except Exception as exc:
+            observe_external_call("supabase", "match_documents_probe", rpc_started_at, success=False)
+            checks["match_documents_rpc_accessible"] = False
+            checks["match_documents_rpc_error"] = str(exc)
+
+        return checks

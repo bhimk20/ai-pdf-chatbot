@@ -69,6 +69,29 @@ def _normalize_route(text: str) -> str:
     return "direct"
 
 
+def _heuristic_route(query: str) -> str:
+    lowered = query.strip().lower()
+    retrieval_markers = (
+        "pdf",
+        "document",
+        "doc",
+        "file",
+        "page",
+        "pages",
+        "uploaded",
+        "upload",
+        "source",
+        "sources",
+        "according to",
+        "from the document",
+        "from the pdf",
+        "in the file",
+    )
+    if any(marker in lowered for marker in retrieval_markers):
+        return "retrieve"
+    return "direct"
+
+
 def _patch_google_genai_retry_compat() -> None:
     if getattr(google_chat_models, "_codex_retry_patch_applied", False):
         return
@@ -118,6 +141,14 @@ class RetrievalService:
             temperature=0.2,
             google_api_key=settings.google_api_key,
         )
+        self.router_model = ChatGoogleGenerativeAI(
+            model=settings.gemini_chat_model,
+            temperature=0,
+            max_tokens=8,
+            request_timeout=5,
+            retries=1,
+            google_api_key=settings.google_api_key,
+        )
         self.supabase: Client = create_client(
             settings.supabase_url,
             settings.supabase_service_role_key,
@@ -150,7 +181,7 @@ class RetrievalService:
 
         started_at = time.perf_counter()
         try:
-            structured_model = self.chat_model.with_structured_output(RouteDecision)
+            structured_model = self.router_model.with_structured_output(RouteDecision)
             response = await structured_model.ainvoke(messages)
             observe_external_call("gemini", "route_query_structured", started_at, success=True)
             if response is not None and getattr(response, "route", None):
@@ -161,7 +192,7 @@ class RetrievalService:
 
         fallback_started_at = time.perf_counter()
         try:
-            fallback_response = await self.chat_model.ainvoke(
+            fallback_response = await self.router_model.ainvoke(
                 [
                     SystemMessage(
                         content=(
@@ -175,7 +206,13 @@ class RetrievalService:
         except Exception:
             observe_external_call("gemini", "route_query_fallback", fallback_started_at, success=False)
             log_event("external_call_failed", service="gemini", operation="route_query_fallback")
-            raise
+            route = _heuristic_route(query)
+            log_event(
+                "route_query_heuristic_fallback",
+                reason="gemini_router_unavailable",
+                route=route,
+            )
+            return route
         observe_external_call("gemini", "route_query_fallback", fallback_started_at, success=True)
         fallback_text = (
             _extract_text_content(fallback_response.content)

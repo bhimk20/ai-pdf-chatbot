@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,6 +27,7 @@ class Settings(BaseSettings):
     max_files: int = Field(default=5, alias="MAX_FILES")
     max_file_size_mb: int = Field(default=10, alias="MAX_FILE_SIZE_MB")
     cors_origins: str = Field(default="http://localhost:3000", alias="CORS_ORIGINS")
+    sqlite_path: str = Field(default="data/chat.sqlite3", alias="SQLITE_PATH")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -41,6 +43,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def sqlite_db_path(self) -> Path:
+        return Path(self.sqlite_path)
 
 
 @lru_cache(maxsize=1)

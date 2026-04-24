@@ -14,6 +14,8 @@ import {
   PDFDocument,
   RetrieveDocumentsNodeUpdates,
 } from '@/types/graphTypes';
+
+const THREAD_STORAGE_KEY = 'pdf-chat-thread-id';
 export default function Home() {
   const { toast } = useToast(); // Add this hook
   const [messages, setMessages] = useState<
@@ -34,21 +36,56 @@ export default function Home() {
   const lastRetrievedDocsRef = useRef<PDFDocument[]>([]); // useRef to store the last retrieved documents
 
   useEffect(() => {
-    // Create a thread when the component mounts
     const initThread = async () => {
-      // Skip if we already have a thread
       if (threadId) return;
 
       try {
-        const response = await fetch('/api/thread', {
-          method: 'POST',
-        });
+        const savedThreadId = window.localStorage.getItem(THREAD_STORAGE_KEY);
+        const response = savedThreadId
+          ? await fetch(`/api/thread/${savedThreadId}`, {
+              method: 'GET',
+            })
+          : await fetch('/api/thread', {
+              method: 'POST',
+            });
+
         if (!response.ok) {
+          if (savedThreadId) {
+            window.localStorage.removeItem(THREAD_STORAGE_KEY);
+            const freshResponse = await fetch('/api/thread', {
+              method: 'POST',
+            });
+            if (!freshResponse.ok) {
+              throw new Error(`HTTP error! status: ${freshResponse.status}`);
+            }
+            const freshThread = await freshResponse.json();
+            setThreadId(freshThread.thread_id);
+            window.localStorage.setItem(
+              THREAD_STORAGE_KEY,
+              freshThread.thread_id,
+            );
+            setMessages([]);
+            return;
+          }
           throw new Error(`HTTP error! status: ${response.status}`);
         }
-        const thread = await response.json();
+        const data = await response.json();
 
-        setThreadId(thread.thread_id);
+        if (savedThreadId) {
+          setThreadId(data.thread_id);
+          setMessages(
+            (data.messages || []).map(
+              (message: { role: 'user' | 'assistant'; content: string }) => ({
+                role: message.role,
+                content: message.content,
+                sources: undefined,
+              }),
+            ),
+          );
+        } else {
+          setThreadId(data.thread_id);
+          window.localStorage.setItem(THREAD_STORAGE_KEY, data.thread_id);
+        }
       } catch (error) {
         console.error('Error creating thread:', error);
         toast({
@@ -239,6 +276,8 @@ export default function Home() {
       const data = await response.json();
       if (data.threadId) {
         setThreadId(data.threadId);
+        window.localStorage.setItem(THREAD_STORAGE_KEY, data.threadId);
+        setMessages([]);
       }
       setFiles((prev) => [...prev, ...selectedFiles]);
       toast({

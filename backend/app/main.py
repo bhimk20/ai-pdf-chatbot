@@ -8,16 +8,22 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import Settings, get_settings
 from app.documents import load_pdf_documents
-from app.models import ChatRequest, IngestResponse, SSEEnvelope, ThreadCreateResponse
+from app.models import (
+    ChatRequest,
+    IngestResponse,
+    SSEEnvelope,
+    ThreadCreateResponse,
+    ThreadStateResponse,
+)
 from app.retrieval import RetrievalService
-from app.thread_store import InMemoryThreadStore
+from app.thread_store import SQLiteThreadStore
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     app.state.settings = settings
-    app.state.threads = InMemoryThreadStore()
+    app.state.threads = SQLiteThreadStore(settings.sqlite_db_path)
     app.state.retrieval = RetrievalService(settings)
     yield
 
@@ -34,6 +40,15 @@ async def healthcheck() -> dict[str, str]:
 async def create_thread() -> ThreadCreateResponse:
     thread_id = app.state.threads.create_thread()
     return ThreadCreateResponse(thread_id=thread_id)
+
+
+@app.get("/threads/{thread_id}", response_model=ThreadStateResponse)
+async def get_thread(thread_id: str) -> ThreadStateResponse:
+    try:
+        messages = app.state.threads.serialized_history(thread_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Thread not found") from exc
+    return ThreadStateResponse(thread_id=thread_id, messages=messages)
 
 
 @app.post("/ingest", response_model=IngestResponse)

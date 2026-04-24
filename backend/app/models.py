@@ -25,6 +25,16 @@ class ThreadCreateResponse(BaseModel):
     thread_id: str
 
 
+class ThreadMessageResponse(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ThreadStateResponse(BaseModel):
+    thread_id: str
+    messages: list[ThreadMessageResponse]
+
+
 class IngestResponse(BaseModel):
     message: str
     threadId: str

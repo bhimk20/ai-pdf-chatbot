@@ -38,6 +38,7 @@ Key backend variables:
 - `CHUNK_SIZE` default: `1500`
 - `CHUNK_OVERLAP` default: `250`
 - `CORS_ORIGINS` default: `http://localhost:3000`
+- `SQLITE_PATH` default: `data/chat.sqlite3`
 
 Create `frontend/.env` from `frontend/.env.example`:
 
@@ -87,6 +88,7 @@ The frontend runs on `http://localhost:3000` and the backend runs on `http://loc
 ## API Overview
 
 - `POST /threads`: create a chat thread
+- `GET /threads/{thread_id}`: load persisted thread messages
 - `POST /ingest`: upload up to 5 PDFs and index them in Supabase
 - `POST /chat/stream`: stream chat responses as SSE
 - `GET /health`: health check
@@ -103,57 +105,8 @@ This migration recreates the `documents` table with `id uuid`, `embedding vector
 
 ## Notes
 
-- Threads are stored in memory in the FastAPI process.
+- Threads and chat messages are persisted in SQLite on the FastAPI side.
 - Indexed PDF chunks persist in Supabase.
 - The active backend runtime is FastAPI in `backend/`.
 - The older TypeScript/LangGraph backend code now lives in `legacy_backend/` for reference.
 - The frontend uses Yarn; the backend is run directly with Python and `uvicorn`.
-
-
-
-
-
-create extension if not exists vector;
-create extension if not exists pgcrypto;
-
-drop function if exists match_documents(vector(768), int, jsonb);
-drop function if exists match_documents(vector(3072), int, jsonb);
-drop function if exists match_documents(vector, int, jsonb);
-
-drop table if exists documents;
-
-create table documents (
-  id uuid primary key default gen_random_uuid(),
-  content text,
-  metadata jsonb,
-  embedding vector(3072)
-);
-
-create or replace function match_documents(
-  query_embedding vector(3072),
-  match_count int default 5,
-  filter jsonb default '{}'::jsonb
-)
-returns table (
-  id uuid,
-  content text,
-  metadata jsonb,
-  embedding vector(3072),
-  similarity float
-)
-language plpgsql
-as $$
-begin
-  return query
-  select
-    documents.id,
-    documents.content,
-    documents.metadata,
-    documents.embedding,
-    1 - (documents.embedding <=> query_embedding) as similarity
-  from documents
-  where documents.metadata @> filter
-  order by documents.embedding <=> query_embedding
-  limit match_count;
-end;
-$$;

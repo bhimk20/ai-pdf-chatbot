@@ -25,6 +25,16 @@ import {
 
 const THREAD_STORAGE_KEY = 'pdf-chat-thread-id';
 
+const getStoredThreadId = () => window.sessionStorage.getItem(THREAD_STORAGE_KEY);
+
+const setStoredThreadId = (threadId: string) => {
+  window.sessionStorage.setItem(THREAD_STORAGE_KEY, threadId);
+};
+
+const clearStoredThreadId = () => {
+  window.sessionStorage.removeItem(THREAD_STORAGE_KEY);
+};
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
@@ -51,35 +61,72 @@ const formatThreadTime = (value: string) => {
 
 export default function Home() {
   const { toast } = useToast();
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messagesByThread, setMessagesByThread] = useState<
+    Record<string, Message[]>
+  >({});
+  const [loadingByThread, setLoadingByThread] = useState<
+    Record<string, boolean>
+  >({});
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
   const [isResettingChat, setIsResettingChat] = useState(false);
   const [isThreadListLoading, setIsThreadListLoading] = useState(true);
   const [threadId, setThreadId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const abortControllersRef = useRef<Record<string, AbortController>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const lastRetrievedDocsRef = useRef<PDFDocument[]>([]);
+  const retrievedDocsByThreadRef = useRef<Record<string, PDFDocument[]>>({});
+
+  const messages = threadId ? messagesByThread[threadId] || [] : [];
+  const isActiveThreadLoading = threadId ? !!loadingByThread[threadId] : false;
+
+  const setThreadMessages = (
+    targetThreadId: string,
+    updater: Message[] | ((prev: Message[]) => Message[]),
+  ) => {
+    setMessagesByThread((prev) => {
+      const current = prev[targetThreadId] || [];
+      const nextMessages =
+        typeof updater === 'function'
+          ? (updater as (prev: Message[]) => Message[])(current)
+          : updater;
+
+      return {
+        ...prev,
+        [targetThreadId]: nextMessages,
+      };
+    });
+  };
+
+  const setThreadLoading = (targetThreadId: string, isLoading: boolean) => {
+    setLoadingByThread((prev) => ({
+      ...prev,
+      [targetThreadId]: isLoading,
+    }));
+  };
 
   const clearComposerState = () => {
     setInput('');
     setFiles([]);
-    lastRetrievedDocsRef.current = [];
   };
 
-  const clearChatState = () => {
-    setMessages([]);
-    clearComposerState();
-  };
+  const abortInFlightChat = (targetThreadId?: string) => {
+    if (targetThreadId) {
+      abortControllersRef.current[targetThreadId]?.abort();
+      delete abortControllersRef.current[targetThreadId];
+      setThreadLoading(targetThreadId, false);
+      delete retrievedDocsByThreadRef.current[targetThreadId];
+      return;
+    }
 
-  const abortInFlightChat = () => {
-    abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
-    setIsLoading(false);
+    for (const activeThreadId of Object.keys(abortControllersRef.current)) {
+      abortControllersRef.current[activeThreadId]?.abort();
+      setThreadLoading(activeThreadId, false);
+      delete retrievedDocsByThreadRef.current[activeThreadId];
+    }
+    abortControllersRef.current = {};
   };
 
   const refreshThreadList = async (preferredThreadId?: string) => {
@@ -119,16 +166,23 @@ export default function Home() {
 
     const data = await response.json();
     setThreadId(data.thread_id);
-    window.localStorage.setItem(THREAD_STORAGE_KEY, data.thread_id);
-    setMessages(
-      (data.messages || []).map(
-        (message: { role: 'user' | 'assistant'; content: string }) => ({
-          role: message.role,
-          content: message.content,
-          sources: undefined,
-        }),
-      ),
-    );
+    setStoredThreadId(data.thread_id);
+    const hasInFlightLocalState =
+      !!loadingByThread[data.thread_id] &&
+      !!messagesByThread[data.thread_id]?.length;
+
+    if (!hasInFlightLocalState) {
+      setThreadMessages(
+        data.thread_id,
+        (data.messages || []).map(
+          (message: { role: 'user' | 'assistant'; content: string }) => ({
+            role: message.role,
+            content: message.content,
+            sources: undefined,
+          }),
+        ),
+      );
+    }
     clearComposerState();
   };
 
@@ -143,9 +197,11 @@ export default function Home() {
 
     const data = await response.json();
     setThreadId(data.thread_id);
-    window.localStorage.setItem(THREAD_STORAGE_KEY, data.thread_id);
-    clearChatState();
+    setStoredThreadId(data.thread_id);
+    setThreadMessages(data.thread_id, []);
+    setThreadLoading(data.thread_id, false);
     await refreshThreadList(data.thread_id);
+    clearComposerState();
     return data.thread_id as string;
   };
 
@@ -154,7 +210,7 @@ export default function Home() {
 
     const init = async () => {
       try {
-        const savedThreadId = window.localStorage.getItem(THREAD_STORAGE_KEY);
+        const savedThreadId = getStoredThreadId();
         await refreshThreadList(savedThreadId || undefined);
 
         if (!active) return;
@@ -164,7 +220,7 @@ export default function Home() {
             await loadThread(savedThreadId);
             return;
           } catch {
-            window.localStorage.removeItem(THREAD_STORAGE_KEY);
+            clearStoredThreadId();
           }
         }
 
@@ -203,7 +259,6 @@ export default function Home() {
       return;
     }
 
-    abortInFlightChat();
     try {
       await loadThread(nextThreadId);
     } catch (error) {
@@ -221,22 +276,23 @@ export default function Home() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || !threadId || isLoading || isResettingChat) return;
+    if (!input.trim() || !threadId || isResettingChat || loadingByThread[threadId]) {
+      return;
+    }
 
-    abortInFlightChat();
-
+    const activeThreadId = threadId;
     const userMessage = input.trim();
-    setMessages((prev) => [
+    setThreadMessages(activeThreadId, (prev) => [
       ...prev,
       { role: 'user', content: userMessage, sources: undefined },
       { role: 'assistant', content: '', sources: undefined },
     ]);
     setInput('');
-    setIsLoading(true);
+    setThreadLoading(activeThreadId, true);
 
     const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-    lastRetrievedDocsRef.current = [];
+    abortControllersRef.current[activeThreadId] = abortController;
+    retrievedDocsByThreadRef.current[activeThreadId] = [];
 
     try {
       const response = await fetch('/api/chat', {
@@ -246,7 +302,7 @@ export default function Home() {
         },
         body: JSON.stringify({
           message: userMessage,
-          threadId,
+          threadId: activeThreadId,
         }),
         signal: abortController.signal,
       });
@@ -290,7 +346,7 @@ export default function Home() {
                 typeof partialContent === 'string' &&
                 !partialContent.startsWith('{')
               ) {
-                setMessages((prev) => {
+                setThreadMessages(activeThreadId, (prev) => {
                   const next = [...prev];
                   if (
                     next.length > 0 &&
@@ -298,7 +354,7 @@ export default function Home() {
                   ) {
                     next[next.length - 1].content = partialContent;
                     next[next.length - 1].sources =
-                      lastRetrievedDocsRef.current;
+                      retrievedDocsByThreadRef.current[activeThreadId] || [];
                   }
                   return next;
                 });
@@ -311,16 +367,17 @@ export default function Home() {
               data.retrieveDocuments &&
               Array.isArray(data.retrieveDocuments.documents)
             ) {
-              lastRetrievedDocsRef.current = (data as RetrieveDocumentsNodeUpdates)
-                .retrieveDocuments.documents as PDFDocument[];
+              retrievedDocsByThreadRef.current[activeThreadId] = (
+                data as RetrieveDocumentsNodeUpdates
+              ).retrieveDocuments.documents as PDFDocument[];
             } else {
-              lastRetrievedDocsRef.current = [];
+              retrievedDocsByThreadRef.current[activeThreadId] = [];
             }
           }
         }
       }
 
-      await refreshThreadList(threadId);
+      await refreshThreadList(activeThreadId);
     } catch (error) {
       if (abortController.signal.aborted) {
         return;
@@ -334,7 +391,7 @@ export default function Home() {
           (error instanceof Error ? error.message : 'Unknown error'),
         variant: 'destructive',
       });
-      setMessages((prev) => {
+      setThreadMessages(activeThreadId, (prev) => {
         const next = [...prev];
         if (next.length > 0 && next[next.length - 1].role === 'assistant') {
           next[next.length - 1].content =
@@ -343,8 +400,9 @@ export default function Home() {
         return next;
       });
     } finally {
-      setIsLoading(false);
-      abortControllerRef.current = null;
+      setThreadLoading(activeThreadId, false);
+      delete abortControllersRef.current[activeThreadId];
+      delete retrievedDocsByThreadRef.current[activeThreadId];
     }
   };
 
@@ -384,8 +442,9 @@ export default function Home() {
       const data = await response.json();
       if (data.threadId) {
         setThreadId(data.threadId);
-        window.localStorage.setItem(THREAD_STORAGE_KEY, data.threadId);
-        setMessages([]);
+        setStoredThreadId(data.threadId);
+        setThreadMessages(data.threadId, []);
+        setThreadLoading(data.threadId, false);
         await refreshThreadList(data.threadId);
       }
       setFiles((prev) => [...prev, ...selectedFiles]);
@@ -424,7 +483,6 @@ export default function Home() {
     if (isUploading || isResettingChat) return;
 
     setIsResettingChat(true);
-    abortInFlightChat();
 
     try {
       await createFreshThread();
@@ -449,7 +507,7 @@ export default function Home() {
     const deletingActiveThread = targetThreadId === threadId;
 
     if (deletingActiveThread) {
-      abortInFlightChat();
+      abortInFlightChat(targetThreadId);
     }
 
     try {
@@ -462,9 +520,20 @@ export default function Home() {
       }
 
       if (deletingActiveThread) {
-        window.localStorage.removeItem(THREAD_STORAGE_KEY);
+        clearStoredThreadId();
         await createFreshThread();
       } else {
+        abortInFlightChat(targetThreadId);
+        setMessagesByThread((prev) => {
+          const next = { ...prev };
+          delete next[targetThreadId];
+          return next;
+        });
+        setLoadingByThread((prev) => {
+          const next = { ...prev };
+          delete next[targetThreadId];
+          return next;
+        });
         await refreshThreadList(threadId || undefined);
       }
     } catch (error) {
@@ -655,7 +724,7 @@ export default function Home() {
                   size="icon"
                   className="h-12 rounded-none rounded-l-2xl"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploading || isLoading || isResettingChat}
+                  disabled={isUploading || isActiveThreadLoading || isResettingChat}
                 >
                   {isUploading ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -671,7 +740,10 @@ export default function Home() {
                   }
                   className="h-12 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0"
                   disabled={
-                    isUploading || isLoading || isResettingChat || !threadId
+                    isUploading ||
+                    isActiveThreadLoading ||
+                    isResettingChat ||
+                    !threadId
                   }
                 />
                 <Button
@@ -681,12 +753,12 @@ export default function Home() {
                   disabled={
                     !input.trim() ||
                     isUploading ||
-                    isLoading ||
+                    isActiveThreadLoading ||
                     isResettingChat ||
                     !threadId
                   }
                 >
-                  {isLoading ? (
+                  {isActiveThreadLoading ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
                     <ArrowUp className="h-4 w-4" />

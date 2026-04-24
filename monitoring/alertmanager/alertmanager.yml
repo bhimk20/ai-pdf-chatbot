@@ -1,0 +1,18 @@
+global:
+  resolve_timeout: 5m
+  smtp_smarthost: mailpit:1025
+  smtp_from: alerts@ai-pdf-chatbot.local
+  smtp_require_tls: false
+
+route:
+  group_by: ["alertname"]
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 2h
+  receiver: local-email
+
+receivers:
+  - name: local-email
+    email_configs:
+      - to: dev@ai-pdf-chatbot.local
+        send_resolved: true

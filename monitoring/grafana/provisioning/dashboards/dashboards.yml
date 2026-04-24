@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: AI PDF Chatbot
+    orgId: 1
+    folder: AI PDF Chatbot
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards

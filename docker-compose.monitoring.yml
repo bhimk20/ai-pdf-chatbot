@@ -1,0 +1,70 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: ai-pdf-chatbot-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - blackbox
+      - alertmanager
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: ai-pdf-chatbot-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: ai-pdf-chatbot-blackbox
+    command:
+      - --config.file=/etc/blackbox_exporter/config.yml
+    ports:
+      - "9115:9115"
+    volumes:
+      - ./monitoring/blackbox/config.yml:/etc/blackbox_exporter/config.yml:ro
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: ai-pdf-chatbot-alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    depends_on:
+      - mailpit
+
+  mailpit:
+    image: axllent/mailpit:v1.20.3
+    container_name: ai-pdf-chatbot-mailpit
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  alertmanager-data:

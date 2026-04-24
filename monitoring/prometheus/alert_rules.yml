@@ -1,0 +1,56 @@
+groups:
+  - name: ai-pdf-chatbot
+    rules:
+      - alert: BackendHealthEndpointDown
+        expr: probe_success{job="blackbox_backend_health"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Backend health endpoint is down
+          description: The backend /health probe has been failing for more than 1 minute.
+
+      - alert: FrontendDown
+        expr: probe_success{job="blackbox_frontend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Frontend is down
+          description: The frontend root page has been failing for more than 1 minute.
+
+      - alert: HighBackendErrorRate
+        expr: sum(rate(app_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(app_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High backend 5xx rate
+          description: More than 5% of backend requests are returning 5xx over the last 5 minutes.
+
+      - alert: HighChatFailureRate
+        expr: sum(rate(app_chat_requests_total{status="error"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Chat failures detected
+          description: Chat requests have been failing in the last 5 minutes.
+
+      - alert: SupabaseFailuresDetected
+        expr: sum(rate(app_external_calls_total{service="supabase",status="error"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Supabase failures detected
+          description: Supabase external calls have been failing in the last 5 minutes.
+
+      - alert: GeminiFailuresDetected
+        expr: sum(rate(app_external_calls_total{service="gemini",status="error"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Gemini failures detected
+          description: Gemini external calls have been failing in the last 5 minutes.

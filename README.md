@@ -105,6 +105,24 @@ Phase 1 monitoring is built into the FastAPI backend:
 - Prometheus metrics at `http://localhost:8000/metrics`
 - Safe readiness/debug checks at `http://localhost:8000/debug/status`
 
+Phase 2/3 monitoring stack is available locally with:
+
+- Prometheus at `http://localhost:9090`
+- Grafana at `http://localhost:3001`
+- Blackbox probes for frontend/backend health
+- Alertmanager at `http://localhost:9093`
+- Mailpit alert inbox at `http://localhost:8025`
+
+Start phase 2:
+
+```bash
+docker compose -f docker-compose.monitoring.yml up -d
+```
+
+More details:
+
+- see `backend/MONITORING.md`
+
 Useful quick checks:
 
 ```bash

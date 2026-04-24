@@ -212,6 +212,8 @@ async def chat_stream(payload: ChatRequest):
         ACTIVE_CHAT_STREAMS.inc()
         started_at = time.perf_counter()
         route = "direct"
+        final_text = ""
+        app.state.threads.append_human(payload.threadId, payload.message)
         try:
             route = await app.state.retrieval.route_query(payload.message)
             if route == "retrieve":
@@ -222,7 +224,6 @@ async def chat_stream(payload: ChatRequest):
                 )
                 yield f"data: {updates.model_dump_json()}\n\n"
 
-                final_text = ""
                 async for partial in app.state.retrieval.stream_answer_with_context(
                     history,
                     payload.message,
@@ -242,8 +243,6 @@ async def chat_stream(payload: ChatRequest):
                 )
                 yield f"data: {event.model_dump_json()}\n\n"
 
-            app.state.threads.append_human(payload.threadId, payload.message)
-            app.state.threads.append_ai(payload.threadId, final_text)
             CHAT_COUNT.labels(route=route, status="success").inc()
             log_event(
                 "chat_completed",
@@ -262,6 +261,8 @@ async def chat_stream(payload: ChatRequest):
             )
             raise
         finally:
+            if final_text:
+                app.state.threads.append_ai(payload.threadId, final_text)
             ACTIVE_CHAT_STREAMS.dec()
 
     return StreamingResponse(
